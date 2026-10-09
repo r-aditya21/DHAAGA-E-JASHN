@@ -1,0 +1,90 @@
+/* Sign-in button, account menu and active-link additions for the navbar. */
+
+header.navbar .nav-link[aria-current="page"] {
+  color: var(--color-gold);
+}
+
+header.navbar .nav-link[aria-current="page"]::after {
+  transform: translateX(-50%) scaleX(1);
+}
+
+/* ---------- Sign in (text button, quiet next to the gold Shop Now) ---------- */
+header.navbar .nav-signin {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 42px;
+  margin: 0 6px 0 2px;
+  padding: 0 14px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--color-navy);
+  border: 1px solid rgba(7, 29, 50, 0.22);
+  border-radius: 999px;
+  transition:
+    background 0.3s var(--ease-luxury),
+    border-color 0.3s var(--ease-luxury),
+    color 0.3s var(--ease-luxury);
+}
+
+header.navbar .nav-signin:hover {
+  background: var(--color-navy);
+  border-color: var(--color-navy);
+  color: var(--color-ivory);
+}
+
+header.navbar .nav-signin-placeholder {
+  display: inline-block;
+  width: 96px;
+  height: 42px;
+  margin: 0 6px 0 2px;
+  visibility: hidden;
+}
+
+/* The icon-only version is for narrow screens. */
+header.navbar .icon-btn.nav-signin-icon {
+  display: none;
+}
+
+/* ---------- Account menu ---------- */
+header.navbar .account-dropdown .account-greeting {
+  padding: 12px 22px 10px;
+  font-family: var(--font-serif);
+  font-size: 1.15rem;
+  line-height: 1.2;
+  color: var(--color-navy);
+  border-bottom: 1px solid rgba(7, 29, 50, 0.08);
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Mobile menu extras ---------- */
+header.navbar .mobile-menu button.mobile-menu-link {
+  width: 100%;
+  text-align: left;
+}
+
+@media (max-width: 960px) {
+  header.navbar .nav-signin {
+    min-height: 38px;
+    padding: 0 12px;
+    letter-spacing: 0.16em;
+  }
+}
+
+@media (max-width: 640px) {
+  header.navbar .nav-signin,
+  header.navbar .nav-signin-placeholder {
+    display: none;
+  }
+
+  header.navbar .icon-btn.nav-signin-icon {
+    display: grid;
+  }
+}

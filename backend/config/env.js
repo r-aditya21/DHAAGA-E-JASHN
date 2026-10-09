@@ -1,0 +1,35 @@
+// Fail fast at startup if required configuration is missing.
+
+const REQUIRED = ["MONGODB_URI", "JWT_SECRET", "CLIENT_URL"];
+
+const validateEnv = () => {
+  const missing = REQUIRED.filter((key) => !process.env[key]);
+
+  if (missing.length > 0) {
+    console.error(
+      `Missing required environment variables: ${missing.join(", ")}`
+    );
+    process.exit(1);
+  }
+
+  if (process.env.JWT_SECRET.length < 32) {
+    const message =
+      "JWT_SECRET should be at least 32 characters long (use a random string).";
+
+    if (process.env.NODE_ENV === "production") {
+      console.error(message);
+      process.exit(1);
+    }
+
+    console.warn(`Warning: ${message}`);
+  }
+};
+
+// CLIENT_URL may hold several comma-separated origins.
+const getAllowedOrigins = () =>
+  (process.env.CLIENT_URL || "")
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+
+module.exports = { validateEnv, getAllowedOrigins };

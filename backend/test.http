@@ -1,0 +1,51 @@
+### DHAAGA BACKEND - FINAL TEST SUITE
+### Fill IDs where needed after creating data.
+### Use VS Code REST Client or another HTTP client.
+
+@baseUrl = http://localhost:5000/api
+
+### Register
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "name": "Test User",
+  "email": "test@dhaaga.com",
+  "password": "test123456"
+}
+
+### Login
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "test@dhaaga.com",
+  "password": "test123456"
+}
+
+### Current user
+GET {{baseUrl}}/auth/me
+
+### Public categories
+GET {{baseUrl}}/categories
+
+### Public products
+GET {{baseUrl}}/products
+
+### Get cart
+GET {{baseUrl}}/cart
+
+### Get wishlist
+GET {{baseUrl}}/wishlist
+
+### Get addresses
+GET {{baseUrl}}/addresses
+
+### Get my orders
+GET {{baseUrl}}/orders
+
+### Get my reviews
+GET {{baseUrl}}/reviews/my
+
+### Logout
+POST {{baseUrl}}/auth/logout
