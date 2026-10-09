@@ -11,12 +11,64 @@ import BagCountManager from '@/components/ui/BagCountManager'
 import { KurtaSilhouette } from '@/components/shop/ProductCard'
 import { getCart, CartItem } from '@/lib/api/cart'
 import { getAddresses, createAddress, Address, AddressInput } from '@/lib/api/addresses'
-import { createOrder } from '@/lib/api/orders'
+import { createOrder, verifyRazorpayPayment } from '@/lib/api/orders'
+import { ApiError } from '@/lib/api/client'
 import { useAuth } from '@/context/AuthContext'
 import { formatPrice } from '@/lib/format'
 
-const FREE_SHIPPING_THRESHOLD = 1499
-const SHIPPING_FEE = 150
+// Keep in sync with backend/config/constants.js (the server is the source of truth).
+const FREE_SHIPPING_THRESHOLD = 1999
+const SHIPPING_FEE = 99
+
+type RazorpaySuccess = {
+  razorpay_order_id: string
+  razorpay_payment_id: string
+  razorpay_signature: string
+}
+
+type RazorpayOptions = {
+  key: string
+  amount: number
+  currency: string
+  name: string
+  description: string
+  order_id: string
+  handler: (response: RazorpaySuccess) => void
+  prefill?: { name?: string; email?: string; contact?: string }
+  theme?: { color?: string }
+  modal?: { ondismiss?: () => void }
+}
+
+declare global {
+  interface Window {
+    Razorpay?: new (options: RazorpayOptions) => { open: () => void }
+  }
+}
+
+const RAZORPAY_SCRIPT_SRC = 'https://checkout.razorpay.com/v1/checkout.js'
+let razorpayScriptPromise: Promise<void> | null = null
+
+// Loaded once, on demand (only when the shopper actually pays online).
+function loadRazorpayScript(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.reject(new Error('No window'))
+  if (window.Razorpay) return Promise.resolve()
+  if (razorpayScriptPromise) return razorpayScriptPromise
+
+  razorpayScriptPromise = new Promise<void>((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = RAZORPAY_SCRIPT_SRC
+    script.async = true
+    script.onload = () => resolve()
+    script.onerror = () => {
+      razorpayScriptPromise = null
+      script.remove()
+      reject(new Error('Could not load the payment window. Check your connection and try again.'))
+    }
+    document.body.appendChild(script)
+  })
+
+  return razorpayScriptPromise
+}
 
 export default function CheckoutPage() {
   const router = useRouter()
@@ -124,21 +176,84 @@ export default function CheckoutPage() {
 
     try {
       setPlacingOrder(true)
+
+      // Fail early if the payment window cannot load, before any order or stock hold exists.
+      if (paymentMethod === 'razorpay') {
+        await loadRazorpayScript()
+      }
+
       const res = await createOrder({
         addressId: selectedAddressId,
         paymentMethod,
       })
 
-      await refreshCart()
-      window.dispatchEvent(
-        new CustomEvent('dhaaga:toast', { detail: 'Order placed successfully!' })
-      )
+      if (paymentMethod === 'cod') {
+        await refreshCart()
+        window.dispatchEvent(
+          new CustomEvent('dhaaga:toast', { detail: 'Order placed successfully!' })
+        )
+        router.push(`/order/${res.order._id}`)
+        return
+      }
 
-      router.push(`/order/${res.order._id}`)
-    } catch (err: any) {
-      setError(err?.message || 'Failed to place order. Please check stock or address.')
-    } finally {
+      if (!res.razorpay || !window.Razorpay) {
+        throw new Error('Online payment is unavailable right now. Please try again.')
+      }
+
+      const checkout = new window.Razorpay({
+        key: res.razorpay.keyId,
+        amount: res.razorpay.amount,
+        currency: res.razorpay.currency,
+        name: 'Dhaaga-E-Jashn',
+        description: `Order ${res.order.orderNumber}`,
+        order_id: res.razorpay.orderId,
+        prefill: { name: user?.name || '', email: user?.email || '' },
+        theme: { color: '#06223C' },
+        handler: async (response) => {
+          try {
+            setPlacingOrder(true)
+            const verified = await verifyRazorpayPayment({
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+            })
+            await refreshCart()
+            window.dispatchEvent(
+              new CustomEvent('dhaaga:toast', { detail: 'Payment successful! Order confirmed.' })
+            )
+            router.push(`/order/${verified.order._id}`)
+          } catch (err) {
+            // The payment may still have gone through: the order page shows the real status.
+            setError(
+              (err instanceof Error ? err.message : 'We could not confirm your payment.') +
+                ' If money was deducted, it will be reflected on your order shortly - check your orders or contact support.'
+            )
+            setPlacingOrder(false)
+          }
+        },
+        modal: {
+          ondismiss: () => {
+            setPlacingOrder(false)
+            setError('Payment was cancelled. Your bag is unchanged - you can try again.')
+          },
+        },
+      })
+
+      checkout.open()
+      // placingOrder stays true until the modal succeeds or is dismissed.
+    } catch (err) {
       setPlacingOrder(false)
+
+      if (err instanceof ApiError && err.status === 401) {
+        router.replace('/login?redirect=%2Fcheckout')
+        return
+      }
+
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : 'Failed to place order. Please check stock or address.'
+      )
     }
   }
 
@@ -439,8 +554,8 @@ export default function CheckoutPage() {
                     alignItems: 'center',
                     gap: 16,
                     padding: '18px 20px',
-                    border: '2px solid #06223C',
-                    background: 'rgba(6,34,60,0.02)',
+                    border: paymentMethod === 'cod' ? '2px solid #06223C' : '1px solid rgba(6,34,60,0.1)',
+                    background: paymentMethod === 'cod' ? 'rgba(6,34,60,0.02)' : '#FFFFFF',
                     cursor: 'pointer',
                   }}
                 >
@@ -456,6 +571,34 @@ export default function CheckoutPage() {
                     </strong>
                     <span style={{ fontSize: 13, color: '#496174' }}>
                       Pay with cash upon receiving your garments at your doorstep.
+                    </span>
+                  </div>
+                </label>
+
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 16,
+                    padding: '18px 20px',
+                    marginTop: 12,
+                    border: paymentMethod === 'razorpay' ? '2px solid #06223C' : '1px solid rgba(6,34,60,0.1)',
+                    background: paymentMethod === 'razorpay' ? 'rgba(6,34,60,0.02)' : '#FFFFFF',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <input
+                    type="radio"
+                    name="paymentMethod"
+                    checked={paymentMethod === 'razorpay'}
+                    onChange={() => setPaymentMethod('razorpay')}
+                  />
+                  <div>
+                    <strong style={{ fontSize: 15, color: '#06223C', display: 'block' }}>
+                      Online Payment
+                    </strong>
+                    <span style={{ fontSize: 13, color: '#496174' }}>
+                      Pay securely using UPI, cards, net banking or wallets.
                     </span>
                   </div>
                 </label>
@@ -560,7 +703,11 @@ export default function CheckoutPage() {
                   letterSpacing: '0.2em',
                 }}
               >
-                {placingOrder ? 'CONFIRMING ORDER...' : 'PLACE ORDER (COD)'}
+                {placingOrder
+                  ? 'PROCESSING...'
+                  : paymentMethod === 'razorpay'
+                    ? 'PAY NOW'
+                    : 'PLACE ORDER (COD)'}
               </button>
 
               <p style={{ fontSize: 11, color: '#496174', textAlign: 'center', marginTop: 16, lineHeight: 1.5 }}>

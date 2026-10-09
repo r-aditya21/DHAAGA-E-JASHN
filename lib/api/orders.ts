@@ -40,16 +40,44 @@ export type Order = {
     | "delivered"
     | "cancelled";
   paymentId?: string;
+  razorpayOrderId?: string;
   orderNumber: string;
   createdAt: string;
   updatedAt: string;
 };
 
+export type CreateOrderResponse = {
+  message: string;
+  order: Order;
+  razorpay?: {
+    orderId: string;
+    amount: number;
+    currency: string;
+    keyId: string;
+  };
+};
+
+export type VerifyRazorpayPaymentResponse = {
+  message: string;
+  order: Order;
+};
+
 export async function createOrder(data: {
   addressId: string;
   paymentMethod: "cod" | "razorpay";
-}): Promise<{ message: string; order: Order }> {
-  return apiFetch<{ message: string; order: Order }>("/orders", {
+}): Promise<CreateOrderResponse> {
+  return apiFetch<CreateOrderResponse>("/orders", {
+    method: "POST",
+    body: data,
+  });
+}
+
+export async function verifyRazorpayPayment(data: {
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+}): Promise<VerifyRazorpayPaymentResponse> {
+  return apiFetch<VerifyRazorpayPaymentResponse>("/orders/razorpay/verify", {
     method: "POST",
     body: data,
   });

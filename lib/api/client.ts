@@ -4,6 +4,16 @@ export type RequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
 };
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 export async function apiFetch<T = unknown>(
   endpoint: string,
   options: RequestOptions = {}
@@ -35,7 +45,7 @@ export async function apiFetch<T = unknown>(
       data?.message ||
       data?.error ||
       (typeof data === "string" ? data : `Request failed with status ${response.status}`);
-    throw new Error(errorMsg);
+    throw new ApiError(errorMsg, response.status);
   }
 
   return data as T;
