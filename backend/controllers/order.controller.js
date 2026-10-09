@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { getRazorpay } = require("../config/razorpay");
 const Order = require("../models/Order");
 const Cart = require("../models/Cart");
 const Address = require("../models/Address");
@@ -22,6 +23,25 @@ const generateOrderNumber = () => {
 
   return `DHAAGA-${timestamp}-${random}`;
 };
+
+// Shared by COD (at creation) and Razorpay (after verified payment).
+const clearCart = (userId) =>
+  Cart.updateOne({ user: userId }, { $set: { items: [] } });
+
+// Idempotent: only the first caller flips pending/failed -> paid.
+// Returns the updated order, or null if it was already paid.
+const markOrderPaid = (orderId, paymentId) =>
+  Order.findOneAndUpdate(
+    { _id: orderId, paymentStatus: { $ne: "paid" } },
+    {
+      $set: {
+        paymentStatus: "paid",
+        paymentId,
+        orderStatus: "confirmed",
+      },
+    },
+    { new: true }
+  );
 
 const createOrder = async (req, res, next) => {
   try {
@@ -142,17 +162,141 @@ const createOrder = async (req, res, next) => {
         paymentMethod,
         orderNumber: generateOrderNumber(),
       });
+
+      if (paymentMethod === "cod") {
+        await clearCart(req.user.userId);
+
+        return res.status(201).json({
+          message: "Order created successfully",
+          order,
+        });
+      }
+
+      // Razorpay: amount is always the server-computed total, in paise.
+      let razorpayOrder;
+
+      try {
+        razorpayOrder = await getRazorpay().orders.create({
+          amount: Math.round(totalAmount * 100),
+          currency: "INR",
+          receipt: order.orderNumber,
+          notes: {
+            dhaagaOrderId: order._id.toString(),
+            userId: req.user.userId.toString(),
+          },
+        });
+      } catch (error) {
+        if (error.statusCode === 401) {
+          const configurationError = new Error(
+            "Razorpay rejected the backend credentials. Check that RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are a matching pair from the same Test or Live account."
+          );
+          configurationError.code = "RAZORPAY_AUTHENTICATION_FAILED";
+          throw configurationError;
+        }
+
+        throw error;
+      }
+
+      order.razorpayOrderId = razorpayOrder.id;
+      await order.save();
+
+      // Cart is cleared only after the payment is verified.
+      return res.status(201).json({
+        message: "Payment order created successfully",
+        order: {
+          _id: order._id,
+          orderNumber: order.orderNumber,
+          totalAmount: order.totalAmount,
+          paymentMethod: order.paymentMethod,
+          paymentStatus: order.paymentStatus,
+        },
+        razorpay: {
+          orderId: razorpayOrder.id,
+          amount: razorpayOrder.amount,
+          currency: razorpayOrder.currency,
+          keyId: process.env.RAZORPAY_KEY_ID, // public key only
+        },
+      });
     } catch (error) {
+      // Setup failed after stock was reserved: give it back and drop the order.
       await restoreStock(orderItems);
+
+      if (order?._id) {
+        await Order.deleteOne({ _id: order._id });
+      }
+
+      throw error;
+    }
+  } catch (error) {
+    next(error);
+  }
+};
+
+const verifyRazorpayPayment = async (req, res, next) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } =
+      req.body;
+
+    if (
+      typeof razorpay_order_id !== "string" ||
+      typeof razorpay_payment_id !== "string" ||
+      typeof razorpay_signature !== "string" ||
+      !razorpay_order_id ||
+      !razorpay_payment_id ||
+      !razorpay_signature
+    ) {
+      return res.status(400).json({
+        message: "Razorpay payment details are required",
+      });
+    }
+
+    if (!process.env.RAZORPAY_KEY_SECRET) {
+      const error = new Error("Razorpay is not configured");
+      error.statusCode = 503;
       throw error;
     }
 
-    // Order placed: empty the cart.
-    await Cart.updateOne({ _id: cart._id }, { $set: { items: [] } });
+    const order = await Order.findOne({
+      razorpayOrderId: razorpay_order_id,
+      user: req.user.userId,
+    });
 
-    res.status(201).json({
-      message: "Order created successfully",
-      order,
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    if (order.paymentStatus === "paid") {
+      return res.status(200).json({
+        message: "Payment already verified",
+        order,
+      });
+    }
+
+    const expected = Buffer.from(
+      crypto
+        .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+        .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+        .digest("hex"),
+      "utf8"
+    );
+    const provided = Buffer.from(razorpay_signature, "utf8");
+
+    const isValid =
+      expected.length === provided.length &&
+      crypto.timingSafeEqual(expected, provided);
+
+    // A bad signature must NOT mutate the order: it could be a tampered
+    // request, and the real payment may still arrive (or hit the webhook).
+    if (!isValid) {
+      return res.status(400).json({ message: "Invalid payment signature" });
+    }
+
+    const paidOrder = await markOrderPaid(order._id, razorpay_payment_id);
+    await clearCart(req.user.userId);
+
+    res.status(200).json({
+      message: "Payment verified successfully",
+      order: paidOrder || (await Order.findById(order._id)),
     });
   } catch (error) {
     next(error);
@@ -344,4 +488,6 @@ module.exports = {
   getAllOrders,
   getAdminOrderById,
   updateOrderStatus,
+  verifyRazorpayPayment,
+  markOrderPaid,
 };

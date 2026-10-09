@@ -166,6 +166,12 @@ const orderSchema = new mongoose.Schema(
       default: "",
     },
 
+    razorpayOrderId: {
+      type: String,
+      default: "",
+      index: true,
+    },
+
     orderNumber: {
       type: String,
       unique: true,

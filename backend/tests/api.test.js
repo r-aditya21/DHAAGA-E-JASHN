@@ -6,6 +6,7 @@
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const bcrypt = require("bcryptjs");
 const mongoose = require("mongoose");
 
@@ -27,9 +28,44 @@ process.env.CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
 process.env.AUTH_RATE_LIMIT_MAX = "1000";
 process.env.API_RATE_LIMIT_MAX = "100000";
 
+// Razorpay is mocked: no network, no real keys.
+process.env.RAZORPAY_KEY_ID = "rzp_test_mock";
+process.env.RAZORPAY_KEY_SECRET = "mock_razorpay_secret";
+
+const razorpayMock = { calls: [], failWith: null, counter: 0 };
+const configPath = require.resolve("../config/razorpay");
+require.cache[configPath] = {
+  id: configPath,
+  filename: configPath,
+  loaded: true,
+  exports: {
+    getRazorpay: () => ({
+      orders: {
+        create: async (options) => {
+          if (razorpayMock.failWith) throw razorpayMock.failWith;
+          razorpayMock.calls.push(options);
+          razorpayMock.counter += 1;
+          return {
+            id: `order_mock_${razorpayMock.counter}`,
+            amount: options.amount,
+            currency: options.currency,
+          };
+        },
+      },
+    }),
+  },
+};
+
+const signPayment = (orderId, paymentId) =>
+  crypto
+    .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+    .update(`${orderId}|${paymentId}`)
+    .digest("hex");
+
 const app = require("../server");
 const User = require("../models/User");
 const Product = require("../models/Product");
+const Order = require("../models/Order");
 
 let server;
 let baseUrl;
@@ -779,6 +815,144 @@ describe("orders and inventory", () => {
     });
     assert.equal(again.status, 400, "cannot cancel twice (no double restock)");
     assert.equal(await stockOf(ctx.product2._id, "M", "Sand"), before + 1);
+  });
+});
+
+describe("razorpay payments (SDK mocked)", () => {
+  const addToCart = () =>
+    call("POST", "/api/cart/items", {
+      cookie: ctx.customer,
+      body: { productId: ctx.product2._id, size: "M", color: "Sand", quantity: 1 },
+    });
+
+  const cartSize = async (cookie) =>
+    (await call("GET", "/api/cart", { cookie })).data.cart.items.length;
+
+  it("creates a Razorpay order from the server-side total and keeps the cart", async () => {
+    const stockBefore = await stockOf(ctx.product2._id, "M", "Sand");
+    assert.equal((await addToCart()).status, 200);
+
+    const res = await call("POST", "/api/orders", {
+      cookie: ctx.customer,
+      body: {
+        addressId: ctx.addressId,
+        paymentMethod: "razorpay",
+        totalAmount: 1, // client-sent totals must be ignored
+      },
+    });
+    assert.equal(res.status, 201, JSON.stringify(res.data));
+
+    // 999 + 99 shipping, in paise
+    assert.equal(razorpayMock.calls.at(-1).amount, (999 + 99) * 100);
+    assert.equal(res.data.razorpay.amount, (999 + 99) * 100);
+    assert.equal(res.data.razorpay.keyId, "rzp_test_mock");
+    assert.equal(res.data.order.paymentStatus, "pending");
+    assert.ok(!JSON.stringify(res.data).includes("mock_razorpay_secret"), "secret never returned");
+
+    const saved = await Order.findById(res.data.order._id);
+    assert.equal(saved.razorpayOrderId, res.data.razorpay.orderId);
+
+    assert.equal(await stockOf(ctx.product2._id, "M", "Sand"), stockBefore - 1);
+    assert.equal(await cartSize(ctx.customer), 1, "cart kept until payment is verified");
+
+    ctx.rzp = {
+      orderId: res.data.order._id,
+      razorpayOrderId: res.data.razorpay.orderId,
+      stockBefore,
+    };
+  });
+
+  it("rejects a tampered signature and leaves the order unpaid", async () => {
+    const res = await call("POST", "/api/orders/razorpay/verify", {
+      cookie: ctx.customer,
+      body: {
+        razorpay_order_id: ctx.rzp.razorpayOrderId,
+        razorpay_payment_id: "pay_mock_1",
+        razorpay_signature: "0".repeat(64),
+      },
+    });
+    assert.equal(res.status, 400);
+
+    const order = await Order.findById(ctx.rzp.orderId);
+    assert.equal(order.paymentStatus, "pending");
+    assert.equal(order.orderStatus, "pending");
+    assert.equal(await cartSize(ctx.customer), 1);
+
+    const malformed = await call("POST", "/api/orders/razorpay/verify", {
+      cookie: ctx.customer,
+      body: { razorpay_order_id: { $ne: "" }, razorpay_payment_id: "x", razorpay_signature: "y" },
+    });
+    assert.equal(malformed.status, 400, "non-string input is rejected");
+  });
+
+  it("does not let another customer verify someone else's order", async () => {
+    const res = await call("POST", "/api/orders/razorpay/verify", {
+      cookie: ctx.other,
+      body: {
+        razorpay_order_id: ctx.rzp.razorpayOrderId,
+        razorpay_payment_id: "pay_mock_1",
+        razorpay_signature: signPayment(ctx.rzp.razorpayOrderId, "pay_mock_1"),
+      },
+    });
+    assert.equal(res.status, 404);
+    assert.equal((await Order.findById(ctx.rzp.orderId)).paymentStatus, "pending");
+  });
+
+  it("marks the order paid on a valid signature, clears the cart, and is idempotent", async () => {
+    const body = {
+      razorpay_order_id: ctx.rzp.razorpayOrderId,
+      razorpay_payment_id: "pay_mock_1",
+      razorpay_signature: signPayment(ctx.rzp.razorpayOrderId, "pay_mock_1"),
+    };
+
+    const res = await call("POST", "/api/orders/razorpay/verify", {
+      cookie: ctx.customer,
+      body,
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.data));
+    assert.equal(res.data.order.paymentStatus, "paid");
+    assert.equal(res.data.order.orderStatus, "confirmed");
+    assert.equal(res.data.order.paymentId, "pay_mock_1");
+    assert.equal(await cartSize(ctx.customer), 0);
+
+    const again = await call("POST", "/api/orders/razorpay/verify", {
+      cookie: ctx.customer,
+      body,
+    });
+    assert.equal(again.status, 200);
+    assert.equal(again.data.order.paymentStatus, "paid");
+
+    assert.equal(
+      await stockOf(ctx.product2._id, "M", "Sand"),
+      ctx.rzp.stockBefore - 1,
+      "stock deducted exactly once"
+    );
+  });
+
+  it("returns 502 and restores stock when Razorpay rejects the credentials", async () => {
+    assert.equal((await addToCart()).status, 200);
+    const stockBefore = await stockOf(ctx.product2._id, "M", "Sand");
+    const ordersBefore = await Order.countDocuments();
+
+    const failure = new Error("Authentication failed");
+    failure.statusCode = 401;
+    razorpayMock.failWith = failure;
+
+    try {
+      const res = await call("POST", "/api/orders", {
+        cookie: ctx.customer,
+        body: { addressId: ctx.addressId, paymentMethod: "razorpay" },
+      });
+      assert.equal(res.status, 502);
+    } finally {
+      razorpayMock.failWith = null;
+    }
+
+    assert.equal(await stockOf(ctx.product2._id, "M", "Sand"), stockBefore);
+    assert.equal(await Order.countDocuments(), ordersBefore, "no orphan order");
+    assert.equal(await cartSize(ctx.customer), 1, "cart intact");
+
+    await call("DELETE", "/api/cart", { cookie: ctx.customer });
   });
 });
 

@@ -35,6 +35,11 @@ const errorHandler = (err, req, res, next) => {
     return res.status(409).json({ message: "Resource already exists" });
   }
 
+  if (err.code === "RAZORPAY_AUTHENTICATION_FAILED") {
+    console.error("Razorpay rejected the configured API credentials.");
+    return res.status(502).json({ message: err.message });
+  }
+
   const status = err.statusCode || err.status || 500;
 
   if (status >= 500) {

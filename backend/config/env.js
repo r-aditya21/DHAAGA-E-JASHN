@@ -26,10 +26,18 @@ const validateEnv = () => {
 };
 
 // CLIENT_URL may hold several comma-separated origins.
-const getAllowedOrigins = () =>
-  (process.env.CLIENT_URL || "")
+const getAllowedOrigins = () => {
+  const configuredOrigins = (process.env.CLIENT_URL || "")
     .split(",")
     .map((origin) => origin.trim().replace(/\/$/, ""))
     .filter(Boolean);
+
+  const localDevelopmentOrigins =
+    process.env.NODE_ENV === "production"
+      ? []
+      : ["http://localhost:3000", "http://127.0.0.1:3000"];
+
+  return [...new Set([...configuredOrigins, ...localDevelopmentOrigins])];
+};
 
 module.exports = { validateEnv, getAllowedOrigins };

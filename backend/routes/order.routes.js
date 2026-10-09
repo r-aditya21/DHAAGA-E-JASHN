@@ -7,6 +7,7 @@ const {
   getAllOrders,
   getAdminOrderById,
   updateOrderStatus,
+  verifyRazorpayPayment,
 } = require("../controllers/order.controller");
 
 const { protect } = require("../middleware/auth.middleware");
@@ -19,6 +20,9 @@ const router = express.Router();
 router.post("/", protect, createOrder);
 
 router.get("/", protect, getMyOrders);
+
+// Must be registered before any "/:id" route
+router.post("/razorpay/verify", protect, verifyRazorpayPayment);
 
 // Admin
 router.get("/admin/all", protect, admin, getAllOrders);
