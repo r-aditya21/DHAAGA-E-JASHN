@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const Order = require("../models/Order");
 const { markOrderPaid, clearCart } = require("../services/order.service");
+const { paymentLog, describeError } = require("../utils/logger");
 
 const signaturesMatch = (rawBody, signature, secret) => {
   if (typeof signature !== "string" || !signature) return false;
@@ -36,6 +37,7 @@ const razorpayWebhook = async (req, res, next) => {
     }
 
     if (!signaturesMatch(rawBody, req.get("X-Razorpay-Signature"), secret)) {
+      paymentLog.warn("webhook_signature_invalid", { ip: req.ip });
       return res.status(400).json({ message: "Invalid signature" });
     }
 
@@ -51,6 +53,11 @@ const razorpayWebhook = async (req, res, next) => {
     // per attempt and the shopper can retry inside the same modal. Unpaid
     // orders are released by the expiry sweeper instead.
     if (event.event !== "payment.captured") {
+      paymentLog.info("webhook_ignored", {
+        eventType: event.event,
+        razorpayOrderId: event.payload?.payment?.entity?.order_id,
+        paymentId: event.payload?.payment?.entity?.id,
+      });
       return res.status(200).json({ received: true });
     }
 
@@ -63,6 +70,10 @@ const razorpayWebhook = async (req, res, next) => {
     const order = await Order.findOne({ razorpayOrderId: payment.order_id });
 
     if (!order) {
+      paymentLog.warn("webhook_unknown_order", {
+        razorpayOrderId: payment.order_id,
+        paymentId: payment.id,
+      });
       return res.status(200).json({ received: true });
     }
 
@@ -71,13 +82,27 @@ const razorpayWebhook = async (req, res, next) => {
       payment.amount !== Math.round(order.totalAmount * 100) ||
       payment.currency !== "INR"
     ) {
-      console.error(
-        `[payments] Webhook amount mismatch for order ${order.orderNumber}: got ${payment.amount} ${payment.currency}`
-      );
+      paymentLog.error("webhook_amount_mismatch", {
+        orderId: String(order._id),
+        orderNumber: order.orderNumber,
+        razorpayOrderId: payment.order_id,
+        paymentId: payment.id,
+        expectedPaise: Math.round(order.totalAmount * 100),
+        receivedPaise: payment.amount,
+        currency: payment.currency,
+      });
       return res.status(200).json({ received: true });
     }
 
     const paid = await markOrderPaid(order._id, payment.id);
+
+    paymentLog.info("webhook_captured_processed", {
+      orderId: String(order._id),
+      orderNumber: order.orderNumber,
+      razorpayOrderId: payment.order_id,
+      paymentId: payment.id,
+      outcome: paid ? "finalised" : "already_finalised",
+    });
 
     if (paid) {
       await clearCart(order.user);
@@ -86,6 +111,7 @@ const razorpayWebhook = async (req, res, next) => {
     res.status(200).json({ received: true });
   } catch (error) {
     // Non-2xx makes Razorpay retry, which is what we want for transient errors.
+    paymentLog.error("webhook_processing_failed", { error: describeError(error) });
     next(error);
   }
 };

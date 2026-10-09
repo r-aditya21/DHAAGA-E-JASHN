@@ -1,41 +1,24 @@
-// Small dependency-free in-memory rate limiter for auth endpoints.
-// Per-instance and reset on restart; swap for express-rate-limit + a shared
-// store (e.g. Redis) if the API is ever scaled to multiple instances.
+// Rate limiting via express-rate-limit.
+//
+// IMPORTANT: the default store is IN MEMORY, i.e. counters are per Node process
+// and reset on restart. That is fine for a single instance. If the API runs on
+// more than one instance (or behind autoscaling), every instance counts
+// separately, so the effective limit is multiplied; pass a shared `store`
+// (e.g. rate-limit-redis) to createRateLimiter to enforce one global limit.
+// Behind a proxy/load balancer, `trust proxy` must be set (server.js does this
+// in production) so the client IP, not the proxy's, is what gets counted.
 
-const createRateLimiter = ({ windowMs, max, message }) => {
-  const hits = new Map();
+const rateLimit = require("express-rate-limit");
 
-  setInterval(() => {
-    const now = Date.now();
-
-    for (const [key, entry] of hits) {
-      if (entry.resetAt <= now) hits.delete(key);
-    }
-  }, windowMs).unref();
-
-  return (req, res, next) => {
-    const now = Date.now();
-    const key = req.ip;
-    const entry = hits.get(key);
-
-    if (!entry || entry.resetAt <= now) {
-      hits.set(key, { count: 1, resetAt: now + windowMs });
-      return next();
-    }
-
-    entry.count += 1;
-
-    if (entry.count > max) {
-      res.set("Retry-After", Math.ceil((entry.resetAt - now) / 1000));
-
-      return res.status(429).json({
-        message: message || "Too many requests, please try again later",
-      });
-    }
-
-    next();
-  };
-};
+const createRateLimiter = ({ windowMs, max, message, store }) =>
+  rateLimit({
+    windowMs,
+    limit: max,
+    standardHeaders: "draft-7", // RateLimit + Retry-After headers
+    legacyHeaders: false,
+    ...(store ? { store } : {}),
+    message: { message: message || "Too many requests, please try again later" },
+  });
 
 const fromEnv = (key, fallback) => {
   const value = Number(process.env[key]);

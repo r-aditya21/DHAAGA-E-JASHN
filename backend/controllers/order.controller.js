@@ -10,6 +10,7 @@ const {
 } = require("../config/constants");
 const { reserveStock, restoreStock } = require("../services/inventory.service");
 const { refundPaidOrder } = require("../services/refund.service");
+const { paymentLog, describeError } = require("../utils/logger");
 const {
   clearCart,
   markOrderPaid,
@@ -178,6 +179,13 @@ const createOrder = async (req, res, next) => {
           },
         });
       } catch (error) {
+        paymentLog.error("razorpay_order_create_failed", {
+          orderId: String(order._id),
+          orderNumber: order.orderNumber,
+          statusCode: error.statusCode,
+          error: describeError(error),
+        });
+
         if (error.statusCode === 401) {
           const configurationError = new Error(
             "Razorpay rejected the backend credentials. Check that RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are a matching pair from the same Test or Live account."
@@ -191,6 +199,13 @@ const createOrder = async (req, res, next) => {
 
       order.razorpayOrderId = razorpayOrder.id;
       await order.save();
+
+      paymentLog.info("razorpay_order_created", {
+        orderId: String(order._id),
+        orderNumber: order.orderNumber,
+        razorpayOrderId: razorpayOrder.id,
+        amountPaise: razorpayOrder.amount,
+      });
 
       // Cart is cleared only after the payment is verified.
       return res.status(201).json({
@@ -280,10 +295,24 @@ const verifyRazorpayPayment = async (req, res, next) => {
     // A bad signature must NOT mutate the order: it could be a tampered
     // request, and the real payment may still arrive (or hit the webhook).
     if (!isValid) {
+      paymentLog.warn("verify_signature_invalid", {
+        orderId: String(order._id),
+        orderNumber: order.orderNumber,
+        razorpayOrderId: razorpay_order_id,
+        paymentId: razorpay_payment_id,
+      });
       return res.status(400).json({ message: "Invalid payment signature" });
     }
 
     const paidOrder = await markOrderPaid(order._id, razorpay_payment_id);
+
+    paymentLog.info("verify_succeeded", {
+      orderId: String(order._id),
+      orderNumber: order.orderNumber,
+      razorpayOrderId: razorpay_order_id,
+      paymentId: razorpay_payment_id,
+      alreadyFinalised: !paidOrder,
+    });
     await clearCart(req.user.userId);
 
     res.status(200).json({
