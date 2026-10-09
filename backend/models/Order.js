@@ -166,6 +166,28 @@ const orderSchema = new mongoose.Schema(
       default: "",
     },
 
+    // Refund bookkeeping for paid Razorpay orders that get cancelled.
+    // paymentStatus only becomes "refunded" once Razorpay confirms the refund.
+    refundStatus: {
+      type: String,
+      enum: ["none", "processing", "succeeded", "failed"],
+      default: "none",
+    },
+
+    refundId: {
+      type: String,
+      default: "",
+    },
+
+    refundError: {
+      type: String,
+      default: "",
+    },
+
+    refundedAt: {
+      type: Date,
+    },
+
     razorpayOrderId: {
       type: String,
       default: "",

@@ -8,6 +8,7 @@ const {
   getAdminOrderById,
   updateOrderStatus,
   verifyRazorpayPayment,
+  retryOrderRefund,
 } = require("../controllers/order.controller");
 
 const { protect } = require("../middleware/auth.middleware");
@@ -34,6 +35,14 @@ router.get(
   admin,
   validateObjectId("id"),
   getAdminOrderById
+);
+
+router.post(
+  "/admin/:id/refund",
+  protect,
+  admin,
+  validateObjectId("id"),
+  retryOrderRefund
 );
 
 router.put(

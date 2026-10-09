@@ -1,6 +1,8 @@
 const Order = require("../models/Order");
 const Cart = require("../models/Cart");
 const { reserveStock, restoreStock } = require("./inventory.service");
+const { refundPaidOrder, retryPendingRefunds } = require("./refund.service");
+const { paymentLog } = require("../utils/logger");
 
 // Razorpay orders that were started but never paid hold reserved stock.
 // After this long they are released by the sweeper.
@@ -13,8 +15,8 @@ const clearCart = (userId) =>
 // Returns the updated order, or null if it was already paid.
 // If WE released the order (cancelled, paymentStatus "failed") before the money
 // arrived, the stock is re-reserved; if that is no longer possible, or an admin
-// cancelled it, the order stays cancelled but is recorded as paid so it can be
-// refunded manually.
+// cancelled it, the order stays cancelled, is recorded as paid, and the money
+// is refunded automatically (a failed refund is kept on the order and retried).
 const markOrderPaid = async (orderId, paymentId) => {
   const current = await Order.findById(orderId);
 
@@ -34,9 +36,13 @@ const markOrderPaid = async (orderId, paymentId) => {
       reservedAgain = true;
     } else {
       orderStatus = "cancelled";
-      console.error(
-        `[payments] Order ${current.orderNumber} was paid (${paymentId}) but is cancelled and cannot be fulfilled. REFUND REQUIRED.`
-      );
+      paymentLog.warn("paid_order_unfulfillable", {
+        orderId: String(current._id),
+        orderNumber: current.orderNumber,
+        razorpayOrderId: current.razorpayOrderId,
+        paymentId,
+        releasedByUs,
+      });
     }
   }
 
@@ -49,6 +55,23 @@ const markOrderPaid = async (orderId, paymentId) => {
   // Lost a race with another finalizer: undo our extra reservation.
   if (!paid && reservedAgain) {
     await restoreStock(current.items);
+  }
+
+  if (paid) {
+    paymentLog.info("order_marked_paid", {
+      orderId: String(paid._id),
+      orderNumber: paid.orderNumber,
+      razorpayOrderId: paid.razorpayOrderId,
+      paymentId,
+      orderStatus: paid.orderStatus,
+      reservedAgain,
+    });
+
+    // Paid but cancelled and cannot be fulfilled: give the money back now.
+    // refundPaidOrder never throws and records failures for the sweeper.
+    if (paid.orderStatus === "cancelled") {
+      await refundPaidOrder(paid._id, { reason: "unfulfillable_payment" });
+    }
   }
 
   return paid;
@@ -71,6 +94,11 @@ const releaseUnpaidRazorpayOrder = async (filter) => {
   if (!order) return false;
 
   await restoreStock(order.items);
+  paymentLog.info("unpaid_order_released", {
+    orderId: String(order._id),
+    orderNumber: order.orderNumber,
+    razorpayOrderId: order.razorpayOrderId,
+  });
   return true;
 };
 
@@ -109,7 +137,32 @@ const releaseExpiredRazorpayOrders = async (now = Date.now()) => {
   return released;
 };
 
+// One sweeper tick: release abandoned checkouts, then retry failed refunds.
+// Each part is isolated and logged so one failure never hides the other.
+const runSweep = async () => {
+  const summary = { released: 0, refundsRetried: 0 };
+
+  try {
+    summary.released = await releaseExpiredRazorpayOrders();
+  } catch (error) {
+    paymentLog.error("sweep_release_failed", { error: error?.message });
+  }
+
+  try {
+    summary.refundsRetried = (await retryPendingRefunds()).length;
+  } catch (error) {
+    paymentLog.error("sweep_refund_retry_failed", { error: error?.message });
+  }
+
+  if (summary.released || summary.refundsRetried) {
+    paymentLog.info("sweep_completed", summary);
+  }
+
+  return summary;
+};
+
 module.exports = {
+  runSweep,
   UNPAID_RAZORPAY_TTL_MS,
   clearCart,
   markOrderPaid,

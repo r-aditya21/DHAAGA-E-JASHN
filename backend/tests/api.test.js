@@ -34,7 +34,13 @@ process.env.RAZORPAY_WEBHOOK_SECRET = "mock_webhook_secret";
 process.env.RAZORPAY_KEY_ID = "rzp_test_mock";
 process.env.RAZORPAY_KEY_SECRET = "mock_razorpay_secret";
 
-const razorpayMock = { calls: [], failWith: null, counter: 0 };
+const razorpayMock = {
+  calls: [],
+  failWith: null,
+  counter: 0,
+  refunds: [],
+  refundFailWith: null,
+};
 const configPath = require.resolve("../config/razorpay");
 require.cache[configPath] = {
   id: configPath,
@@ -42,6 +48,13 @@ require.cache[configPath] = {
   loaded: true,
   exports: {
     getRazorpay: () => ({
+      payments: {
+        refund: async (paymentId, params) => {
+          if (razorpayMock.refundFailWith) throw razorpayMock.refundFailWith;
+          razorpayMock.refunds.push({ paymentId, params });
+          return { id: `rfnd_mock_${razorpayMock.refunds.length}`, payment_id: paymentId };
+        },
+      },
       orders: {
         create: async (options) => {
           if (razorpayMock.failWith) throw razorpayMock.failWith;
@@ -1393,5 +1406,214 @@ describe("admin: dashboard, categories overview, users", () => {
     });
     assert.equal(demote.status, 200);
     assert.equal((await call("GET", "/api/admin/dashboard", { cookie: ctx.customer })).status, 403);
+  });
+});
+
+describe("razorpay refunds (SDK mocked)", () => {
+  let adminCookie;
+  let customerCookie;
+  let customerId;
+  let refundProduct;
+  let seq = 0;
+
+  before(async () => {
+    const login = await call("POST", "/api/auth/login", {
+      body: { email: "admin@dhaaga.test", password: PASSWORD },
+    });
+    assert.equal(login.status, 200);
+    adminCookie = login.cookie;
+
+    // Self-contained: own customer, category and product, so this block does
+    // not depend on state left behind by earlier blocks.
+    const email = `refund_${Date.now()}@example.com`;
+    customerCookie = await registerAndLogin("Refund Customer", email);
+    customerId = (await User.findOne({ email }))._id;
+
+    const category = await require("../models/Category").create({
+      name: "Refund Test Category",
+      slug: "refund-test-category",
+    });
+    const created = await call("POST", "/api/products", {
+      cookie: adminCookie,
+      body: {
+        name: "Refund Test Kurta",
+        description: "For refund tests",
+        price: 999,
+        category: category._id,
+        variants: [{ size: "M", color: "Sand", stock: 5 }],
+      },
+    });
+    assert.equal(created.status, 201);
+    refundProduct = created.data.product;
+  });
+
+  // A paid online order, created directly so the refund rules can be tested
+  // in isolation from checkout.
+  const paidOnlineOrder = async (overrides = {}) => {
+    seq += 1;
+    return Order.create({
+      user: customerId,
+      items: [
+        {
+          product: refundProduct._id,
+          productName: "Refund test kurta",
+          size: "M",
+          color: "Sand",
+          price: 999,
+          quantity: 1,
+        },
+      ],
+      shippingAddress: {
+        fullName: "Aarav Sharma",
+        phone: "9876543210",
+        addressLine1: "12 MG Road",
+        city: "Pune",
+        state: "Maharashtra",
+        pincode: "411001",
+      },
+      subtotal: 999,
+      shippingFee: 99,
+      totalAmount: 1098,
+      paymentMethod: "razorpay",
+      paymentStatus: "paid",
+      orderStatus: "confirmed",
+      paymentId: `pay_refund_${seq}`,
+      razorpayOrderId: `order_refund_${seq}`,
+      orderNumber: `DHG-REFUND-${seq}`,
+      ...overrides,
+    });
+  };
+
+  const cancel = (id) =>
+    call("PUT", `/api/orders/admin/${id}/status`, {
+      cookie: adminCookie,
+      body: { orderStatus: "cancelled" },
+    });
+
+  it("refunds the full amount when an admin cancels a paid online order", async () => {
+    const order = await paidOnlineOrder();
+    razorpayMock.refunds.length = 0;
+    const stockBefore = await stockOf(refundProduct._id, "M", "Sand");
+
+    const res = await cancel(order._id);
+
+    assert.equal(res.status, 200);
+    assert.equal(res.data.refund.status, "refunded");
+    assert.equal(razorpayMock.refunds.length, 1);
+    assert.equal(razorpayMock.refunds[0].paymentId, order.paymentId);
+    assert.equal(razorpayMock.refunds[0].params.amount, 1098 * 100);
+
+    const saved = await Order.findById(order._id);
+    assert.equal(saved.orderStatus, "cancelled");
+    assert.equal(saved.paymentStatus, "refunded");
+    assert.equal(saved.refundStatus, "succeeded");
+    assert.match(saved.refundId, /^rfnd_mock_/);
+    assert.equal(await stockOf(refundProduct._id, "M", "Sand"), stockBefore + 1, "stock restored");
+  });
+
+  it("does not refund twice if the order is cancelled again or the refund is retried", async () => {
+    const order = await paidOnlineOrder();
+    razorpayMock.refunds.length = 0;
+
+    assert.equal((await cancel(order._id)).status, 200);
+    assert.equal((await cancel(order._id)).status, 400, "cancelled is final");
+
+    const retry = await call("POST", `/api/orders/admin/${order._id}/refund`, { cookie: adminCookie });
+    assert.equal(retry.status, 200);
+    assert.equal(retry.data.refund.status, "refunded");
+    assert.equal(razorpayMock.refunds.length, 1, "Razorpay was called exactly once");
+  });
+
+  it("cancels but keeps the order paid when Razorpay rejects the refund, then retries successfully", async () => {
+    const order = await paidOnlineOrder();
+    razorpayMock.refunds.length = 0;
+    razorpayMock.refundFailWith = {
+      statusCode: 400,
+      error: { description: "Insufficient balance for refund" },
+    };
+
+    const failed = await cancel(order._id);
+    razorpayMock.refundFailWith = null;
+
+    assert.equal(failed.status, 200, "the cancellation itself still succeeds");
+    assert.equal(failed.data.refund.status, "failed");
+    assert.match(failed.data.message, /refund failed/i);
+
+    const saved = await Order.findById(order._id);
+    assert.equal(saved.orderStatus, "cancelled");
+    assert.equal(saved.paymentStatus, "paid", "money not returned yet, so still paid");
+    assert.equal(saved.refundStatus, "failed");
+    assert.match(saved.refundError, /Insufficient balance/);
+
+    const retry = await call("POST", `/api/orders/admin/${order._id}/refund`, { cookie: adminCookie });
+    assert.equal(retry.status, 200);
+    assert.equal((await Order.findById(order._id)).paymentStatus, "refunded");
+  });
+
+  it("does not call Razorpay when cancelling COD or unpaid online orders", async () => {
+    const cod = await paidOnlineOrder({
+      paymentMethod: "cod",
+      paymentStatus: "pending",
+      paymentId: "",
+      razorpayOrderId: "",
+    });
+    const unpaid = await paidOnlineOrder({ paymentStatus: "pending", paymentId: "" });
+    razorpayMock.refunds.length = 0;
+
+    for (const order of [cod, unpaid]) {
+      const res = await cancel(order._id);
+      assert.equal(res.status, 200);
+      assert.equal(res.data.refund, undefined);
+    }
+
+    assert.equal(razorpayMock.refunds.length, 0);
+  });
+
+  it("only lets admins retry refunds, and only for paid cancelled online orders", async () => {
+    const order = await paidOnlineOrder();
+
+    const anon = await call("POST", `/api/orders/admin/${order._id}/refund`);
+    assert.equal(anon.status, 401);
+
+    const customer = await call("POST", `/api/orders/admin/${order._id}/refund`, { cookie: customerCookie });
+    assert.equal(customer.status, 403);
+
+    const notCancelled = await call("POST", `/api/orders/admin/${order._id}/refund`, { cookie: adminCookie });
+    assert.equal(notCancelled.status, 400);
+  });
+
+  it("refunds automatically when a payment arrives for an order an admin already cancelled", async () => {
+    const order = await paidOnlineOrder({
+      paymentStatus: "pending",
+      orderStatus: "cancelled",
+      paymentId: "",
+    });
+    razorpayMock.refunds.length = 0;
+
+    const { markOrderPaid } = require("../services/order.service");
+    await markOrderPaid(order._id, "pay_late_after_admin_cancel");
+
+    assert.equal(razorpayMock.refunds.length, 1);
+    assert.equal(razorpayMock.refunds[0].paymentId, "pay_late_after_admin_cancel");
+
+    const saved = await Order.findById(order._id);
+    assert.equal(saved.orderStatus, "cancelled", "not fulfilled");
+    assert.equal(saved.paymentStatus, "refunded");
+  });
+
+  it("the sweeper retries refunds that failed earlier", async () => {
+    const order = await paidOnlineOrder({
+      orderStatus: "cancelled",
+      refundStatus: "failed",
+      refundError: "Gateway timeout",
+    });
+    razorpayMock.refunds.length = 0;
+
+    const { runSweep } = require("../services/order.service");
+    const summary = await runSweep();
+
+    assert.ok(summary.refundsRetried >= 1);
+    assert.equal((await Order.findById(order._id)).paymentStatus, "refunded");
+    assert.equal(razorpayMock.refunds.at(-1).paymentId, order.paymentId);
   });
 });

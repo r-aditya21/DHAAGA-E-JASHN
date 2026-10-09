@@ -9,6 +9,7 @@ const {
   canTransitionOrder,
 } = require("../config/constants");
 const { reserveStock, restoreStock } = require("../services/inventory.service");
+const { refundPaidOrder } = require("../services/refund.service");
 const {
   clearCart,
   markOrderPaid,
@@ -463,9 +464,76 @@ const updateOrderStatus = async (req, res, next) => {
       await restoreStock(order.items);
     }
 
+    // Cancelling a PAID online order must give the customer their money back.
+    // A failed refund does not undo the cancellation: it is recorded on the
+    // order (refundStatus "failed") and can be retried by the admin or the sweeper.
+    let refund = null;
+
+    if (
+      orderStatus === "cancelled" &&
+      updatedOrder.paymentMethod === "razorpay" &&
+      updatedOrder.paymentStatus === "paid"
+    ) {
+      refund = await refundPaidOrder(updatedOrder._id, { reason: "admin_cancel" });
+    }
+
+    const finalOrder = refund ? await Order.findById(order._id) : updatedOrder;
+
     res.status(200).json({
-      message: "Order status updated successfully",
-      order: updatedOrder,
+      message:
+        refund?.status === "failed"
+          ? "Order cancelled, but the refund failed. Retry the refund from the order."
+          : "Order status updated successfully",
+      order: finalOrder,
+      ...(refund ? { refund } : {}),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// POST /api/orders/admin/:id/refund  (retry a refund that failed)
+const retryOrderRefund = async (req, res, next) => {
+  try {
+    const order = await Order.findById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    if (order.paymentStatus === "refunded") {
+      return res.status(200).json({
+        message: "Order is already refunded",
+        order,
+        refund: { status: "refunded", refundId: order.refundId },
+      });
+    }
+
+    if (
+      order.paymentMethod !== "razorpay" ||
+      order.paymentStatus !== "paid" ||
+      order.orderStatus !== "cancelled"
+    ) {
+      return res.status(400).json({
+        message: "Only paid, cancelled online orders can be refunded",
+      });
+    }
+
+    const refund = await refundPaidOrder(order._id, { reason: "admin_retry" });
+
+    if (refund.status === "skipped") {
+      return res.status(409).json({
+        message: "A refund for this order is already in progress",
+      });
+    }
+
+    res.status(refund.status === "failed" ? 502 : 200).json({
+      message:
+        refund.status === "failed"
+          ? "Refund failed. It is saved on the order and will be retried."
+          : "Refund issued",
+      order: await Order.findById(order._id),
+      refund,
     });
   } catch (error) {
     next(error);
@@ -473,6 +541,7 @@ const updateOrderStatus = async (req, res, next) => {
 };
 
 module.exports = {
+  retryOrderRefund,
   createOrder,
   getMyOrders,
   getOrderById,
