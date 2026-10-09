@@ -27,6 +27,8 @@ process.env.JWT_SECRET =
 process.env.CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
 process.env.AUTH_RATE_LIMIT_MAX = "1000";
 process.env.API_RATE_LIMIT_MAX = "100000";
+process.env.ORDER_RATE_LIMIT_MAX = "100000";
+process.env.RAZORPAY_WEBHOOK_SECRET = "mock_webhook_secret";
 
 // Razorpay is mocked: no network, no real keys.
 process.env.RAZORPAY_KEY_ID = "rzp_test_mock";
@@ -66,6 +68,7 @@ const app = require("../server");
 const User = require("../models/User");
 const Product = require("../models/Product");
 const Order = require("../models/Order");
+const { releaseExpiredRazorpayOrders } = require("../services/order.service");
 
 let server;
 let baseUrl;
@@ -951,6 +954,135 @@ describe("razorpay payments (SDK mocked)", () => {
     assert.equal(await stockOf(ctx.product2._id, "M", "Sand"), stockBefore);
     assert.equal(await Order.countDocuments(), ordersBefore, "no orphan order");
     assert.equal(await cartSize(ctx.customer), 1, "cart intact");
+
+    await call("DELETE", "/api/cart", { cookie: ctx.customer });
+  });
+});
+
+describe("razorpay webhook and abandoned orders (SDK mocked)", () => {
+  const addToCart = () =>
+    call("POST", "/api/cart/items", {
+      cookie: ctx.customer,
+      body: { productId: ctx.product2._id, size: "M", color: "Sand", quantity: 1 },
+    });
+
+  const startCheckout = async () => {
+    assert.equal((await addToCart()).status, 200);
+    const res = await call("POST", "/api/orders", {
+      cookie: ctx.customer,
+      body: { addressId: ctx.addressId, paymentMethod: "razorpay" },
+    });
+    assert.equal(res.status, 201, JSON.stringify(res.data));
+    return {
+      id: res.data.order._id,
+      razorpayOrderId: res.data.razorpay.orderId,
+      amount: res.data.razorpay.amount,
+    };
+  };
+
+  const sendWebhook = async (payload, signature) => {
+    const raw = JSON.stringify(payload);
+    const sig =
+      signature ??
+      crypto.createHmac("sha256", process.env.RAZORPAY_WEBHOOK_SECRET).update(raw).digest("hex");
+
+    const response = await fetch(`${baseUrl}/api/orders/razorpay/webhook`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Razorpay-Signature": sig },
+      body: raw,
+    });
+    return response.status;
+  };
+
+  const captured = (order, overrides = {}) => ({
+    event: "payment.captured",
+    payload: {
+      payment: {
+        entity: {
+          id: "pay_wh_1",
+          order_id: order.razorpayOrderId,
+          amount: order.amount,
+          currency: "INR",
+          ...overrides,
+        },
+      },
+    },
+  });
+
+  const cartSize = async () =>
+    (await call("GET", "/api/cart", { cookie: ctx.customer })).data.cart.items.length;
+
+  it("releases a shopper's abandoned attempt when they start a new one", async () => {
+    const stock0 = await stockOf(ctx.product2._id, "M", "Sand");
+
+    const first = await startCheckout();
+    assert.equal(await stockOf(ctx.product2._id, "M", "Sand"), stock0 - 1);
+
+    const second = await startCheckout();
+    assert.equal(await stockOf(ctx.product2._id, "M", "Sand"), stock0 - 1, "held once, not twice");
+
+    const abandoned = await Order.findById(first.id);
+    assert.equal(abandoned.orderStatus, "cancelled");
+    assert.equal(abandoned.paymentStatus, "failed");
+    assert.equal((await Order.findById(second.id)).paymentStatus, "pending");
+
+    ctx.wh = { second, stock0 };
+  });
+
+  it("rejects webhooks with a missing or wrong signature", async () => {
+    const payload = captured(ctx.wh.second);
+    assert.equal(await sendWebhook(payload, "0".repeat(64)), 400);
+    assert.equal(await sendWebhook(payload, ""), 400);
+    assert.equal((await Order.findById(ctx.wh.second.id)).paymentStatus, "pending");
+  });
+
+  it("ignores a captured event whose amount does not match the order", async () => {
+    const status = await sendWebhook(captured(ctx.wh.second, { amount: 100 }));
+    assert.equal(status, 200);
+    assert.equal((await Order.findById(ctx.wh.second.id)).paymentStatus, "pending");
+  });
+
+  it("finalises the order from payment.captured even if the tab was closed, idempotently", async () => {
+    assert.equal(await sendWebhook(captured(ctx.wh.second)), 200);
+
+    const order = await Order.findById(ctx.wh.second.id);
+    assert.equal(order.paymentStatus, "paid");
+    assert.equal(order.orderStatus, "confirmed");
+    assert.equal(order.paymentId, "pay_wh_1");
+    assert.equal(await cartSize(), 0, "cart cleared");
+
+    assert.equal(await sendWebhook(captured(ctx.wh.second)), 200, "replay is harmless");
+    assert.equal(await stockOf(ctx.product2._id, "M", "Sand"), ctx.wh.stock0 - 1, "stock deducted once");
+  });
+
+  it("acknowledges payment.failed without changing the order", async () => {
+    const pending = await startCheckout();
+    const status = await sendWebhook({
+      event: "payment.failed",
+      payload: { payment: { entity: { id: "pay_fail_1", order_id: pending.razorpayOrderId } } },
+    });
+    assert.equal(status, 200);
+    assert.equal((await Order.findById(pending.id)).orderStatus, "pending");
+    ctx.wh.pending = pending;
+  });
+
+  it("releases expired unpaid orders, and a late payment re-reserves the stock", async () => {
+    const stockHeld = await stockOf(ctx.product2._id, "M", "Sand");
+
+    const released = await releaseExpiredRazorpayOrders(Date.now() + 31 * 60 * 1000);
+    assert.equal(released, 1);
+    assert.equal(await stockOf(ctx.product2._id, "M", "Sand"), stockHeld + 1);
+    assert.equal((await Order.findById(ctx.wh.pending.id)).orderStatus, "cancelled");
+
+    assert.equal(
+      await sendWebhook(captured(ctx.wh.pending, { id: "pay_late_1" })),
+      200
+    );
+
+    const order = await Order.findById(ctx.wh.pending.id);
+    assert.equal(order.paymentStatus, "paid");
+    assert.equal(order.orderStatus, "confirmed");
+    assert.equal(await stockOf(ctx.product2._id, "M", "Sand"), stockHeld, "stock reserved again");
 
     await call("DELETE", "/api/cart", { cookie: ctx.customer });
   });

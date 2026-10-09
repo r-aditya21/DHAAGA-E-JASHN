@@ -13,11 +13,12 @@ const {
 const { protect } = require("../middleware/auth.middleware");
 const { admin } = require("../middleware/admin.middleware");
 const { validateObjectId } = require("../middleware/validate.middleware");
+const { orderLimiter } = require("../middleware/rateLimit.middleware");
 
 const router = express.Router();
 
 // Customer
-router.post("/", protect, createOrder);
+router.post("/", protect, orderLimiter, createOrder);
 
 router.get("/", protect, getMyOrders);
 

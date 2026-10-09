@@ -11,6 +11,11 @@ const {
 } = require("../config/constants");
 const { reserveStock, restoreStock } = require("../services/inventory.service");
 const {
+  clearCart,
+  markOrderPaid,
+  releaseUserUnpaidRazorpayOrders,
+} = require("../services/order.service");
+const {
   isValidObjectId,
   escapeRegex,
   parsePagination,
@@ -23,25 +28,6 @@ const generateOrderNumber = () => {
 
   return `DHAAGA-${timestamp}-${random}`;
 };
-
-// Shared by COD (at creation) and Razorpay (after verified payment).
-const clearCart = (userId) =>
-  Cart.updateOne({ user: userId }, { $set: { items: [] } });
-
-// Idempotent: only the first caller flips pending/failed -> paid.
-// Returns the updated order, or null if it was already paid.
-const markOrderPaid = (orderId, paymentId) =>
-  Order.findOneAndUpdate(
-    { _id: orderId, paymentStatus: { $ne: "paid" } },
-    {
-      $set: {
-        paymentStatus: "paid",
-        paymentId,
-        orderStatus: "confirmed",
-      },
-    },
-    { new: true }
-  );
 
 const createOrder = async (req, res, next) => {
   try {
@@ -84,6 +70,12 @@ const createOrder = async (req, res, next) => {
       return res.status(404).json({
         message: "Address not found",
       });
+    }
+
+    // A new online-payment attempt supersedes this shopper's abandoned ones,
+    // otherwise their stale reservations would double-hold the same stock.
+    if (paymentMethod === "razorpay") {
+      await releaseUserUnpaidRazorpayOrders(req.user.userId);
     }
 
     // Build order lines from current database data (never from the client).
@@ -489,5 +481,4 @@ module.exports = {
   getAdminOrderById,
   updateOrderStatus,
   verifyRazorpayPayment,
-  markOrderPaid,
 };

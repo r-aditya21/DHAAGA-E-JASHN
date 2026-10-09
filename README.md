@@ -62,6 +62,10 @@ MONGODB_URI_TEST=mongodb://127.0.0.1:27017/dhaaga_test npm test
 
 The suite wipes its database, so the name must contain `test`. Frontend checks: `npx tsc --noEmit` and `npm run build`.
 
+## Online payments (Razorpay)
+
+Set `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` on the API (all three are required when `NODE_ENV=production`). Use test-mode keys until you go live, and register the webhook URL `https://<your-api>/api/orders/razorpay/webhook` for `payment.captured`. Setup details and the payment flow are in `backend/README.md`. The frontend needs no Razorpay variables.
+
 ## Deploying with separate domains
 
 If the site and the API are on different domains (for example Vercel + Render), set `COOKIE_SAMESITE=none` and `CLIENT_URL=https://your-site` on the API, and `NEXT_PUBLIC_API_URL=https://your-api/api` on the frontend. Otherwise the login cookie will not be sent.

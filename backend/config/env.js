@@ -1,6 +1,11 @@
 // Fail fast at startup if required configuration is missing.
 
 const REQUIRED = ["MONGODB_URI", "JWT_SECRET", "CLIENT_URL"];
+const PRODUCTION_REQUIRED = [
+  "RAZORPAY_KEY_ID",
+  "RAZORPAY_KEY_SECRET",
+  "RAZORPAY_WEBHOOK_SECRET",
+];
 
 const validateEnv = () => {
   const missing = REQUIRED.filter((key) => !process.env[key]);
@@ -10,6 +15,20 @@ const validateEnv = () => {
       `Missing required environment variables: ${missing.join(", ")}`
     );
     process.exit(1);
+  }
+
+  // Online payments cannot work (or be trusted) without these in production.
+  if (process.env.NODE_ENV === "production") {
+    const missingPayments = PRODUCTION_REQUIRED.filter(
+      (key) => !process.env[key]
+    );
+
+    if (missingPayments.length > 0) {
+      console.error(
+        `Missing required production environment variables: ${missingPayments.join(", ")}`
+      );
+      process.exit(1);
+    }
   }
 
   if (process.env.JWT_SECRET.length < 32) {

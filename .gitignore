@@ -42,5 +42,6 @@ yarn-error.log*
 next-env.d.ts
 
 # backend
-backend/.envtsconfig.tsbuildinfo
+backend/.env
+tsconfig.tsbuildinfo
 MERGE_STATUS.md

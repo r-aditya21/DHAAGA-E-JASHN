@@ -12,6 +12,8 @@ const connectDB = require("./config/db");
 const { ensureBody } = require("./middleware/validate.middleware");
 const { notFound, errorHandler } = require("./middleware/error.middleware");
 const { apiLimiter } = require("./middleware/rateLimit.middleware");
+const { razorpayWebhook } = require("./controllers/razorpayWebhook.controller");
+const { releaseExpiredRazorpayOrders } = require("./services/order.service");
 
 const authRoutes = require("./routes/auth.routes");
 const productRoutes = require("./routes/product.routes");
@@ -51,6 +53,14 @@ app.use(
     },
     credentials: true,
   })
+);
+
+// Razorpay webhook: needs the RAW body for signature verification, so it must
+// be registered before express.json(). Server-to-server: no CORS/auth/limiter.
+app.post(
+  "/api/orders/razorpay/webhook",
+  express.raw({ type: "application/json", limit: "100kb" }),
+  razorpayWebhook
 );
 
 app.use(express.json({ limit: "100kb" }));
@@ -98,6 +108,13 @@ const startServer = async () => {
   const server = app.listen(PORT, () => {
     console.log(`Dhaaga backend running on http://localhost:${PORT}`);
   });
+
+  // Give back stock held by Razorpay checkouts that were never paid.
+  const sweep = () =>
+    releaseExpiredRazorpayOrders().catch((error) =>
+      console.error("Unpaid order sweep failed:", error)
+    );
+  setInterval(sweep, 5 * 60 * 1000).unref();
 
   // Finish in-flight requests and close the DB cleanly on deploy/restart.
   const shutdown = (signal) => {

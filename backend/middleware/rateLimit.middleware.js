@@ -55,4 +55,11 @@ const apiLimiter = createRateLimiter({
   max: fromEnv("API_RATE_LIMIT_MAX", 300),
 });
 
-module.exports = { createRateLimiter, authLimiter, apiLimiter };
+// Order creation (also creates Razorpay orders and reserves stock).
+const orderLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: fromEnv("ORDER_RATE_LIMIT_MAX", 30),
+  message: "Too many order attempts, please try again in a few minutes",
+});
+
+module.exports = { createRateLimiter, authLimiter, apiLimiter, orderLimiter };
