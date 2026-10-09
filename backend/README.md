@@ -57,7 +57,19 @@ How it works:
 - `POST /api/orders` with `paymentMethod: "razorpay"` prices the cart on the server from database prices (client totals are ignored), reserves stock, creates the Razorpay order and returns `{ order, razorpay: { orderId, amount, currency, keyId } }`. The cart is kept until payment is verified.
 - `POST /api/orders/razorpay/verify` checks the HMAC-SHA256 signature (`order_id|payment_id`) with a timing-safe compare, then marks the order paid. A bad signature changes nothing. Repeating a verify is harmless.
 - `POST /api/orders/razorpay/webhook` (raw body, `X-Razorpay-Signature`) handles `payment.captured`. It ignores events whose amount differs from the order total. `payment.failed` is acknowledged only, because a shopper can retry inside the same Razorpay window.
-- Stock for unpaid Razorpay orders is released when the same shopper starts a new checkout, and by a sweeper after 30 minutes. If a payment arrives after its order was released, the stock is reserved again; if that is impossible the order stays cancelled, is marked paid and `REFUND REQUIRED` is logged (refunds are not automated).
+- Stock for unpaid Razorpay orders is released when the same shopper starts a new checkout, and by a sweeper after 30 minutes. If a payment arrives after its order was released, the stock is reserved again; if that is impossible (or an admin already cancelled it) the order stays cancelled and the money is refunded automatically.
+
+Refunds:
+
+- Cancelling a PAID online order (`PUT /api/orders/admin/:id/status` with `cancelled`) restores stock and refunds the full amount through Razorpay using the stored `paymentId`. `paymentStatus` becomes `refunded` only after Razorpay confirms.
+- If Razorpay rejects the refund the cancellation still stands, `paymentStatus` stays `paid`, `refundStatus` is `failed` and `refundError` holds the reason. The sweeper retries every 5 minutes; an admin can also retry with `POST /api/orders/admin/:id/refund`.
+- A refund is claimed atomically, so it cannot be issued twice, and Razorpay's "already refunded" answer is treated as success.
+
+Logging: payment events are written as one JSON object per line (`scope: "payments"`, with order id, Razorpay order/payment id and outcome). Secrets, signatures, tokens and card fields are stripped by `utils/logger.js`.
+
+Rate limiting uses `express-rate-limit` with the default in-memory store: counters are per instance. If you run more than one instance, pass a shared store (for example `rate-limit-redis`) to `createRateLimiter`, otherwise each instance enforces its own limit.
+
+Google sign-in: `GOOGLE_CLIENT_ID` (API) must equal `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (storefront, set before `next build`). A token that fails verification returns 401 and the reason is logged server-side.
 
 ## Important
 

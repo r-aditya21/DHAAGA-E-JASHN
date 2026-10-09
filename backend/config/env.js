@@ -31,6 +31,13 @@ const validateEnv = () => {
     }
   }
 
+  if (!process.env.GOOGLE_CLIENT_ID) {
+    console.warn(
+      "Warning: GOOGLE_CLIENT_ID is not set, so Google sign-in will fail. " +
+        "It must equal NEXT_PUBLIC_GOOGLE_CLIENT_ID on the storefront."
+    );
+  }
+
   if (process.env.JWT_SECRET.length < 32) {
     const message =
       "JWT_SECRET should be at least 32 characters long (use a random string).";
