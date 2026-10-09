@@ -176,10 +176,26 @@ const googleLogin = async (req, res, next) => {
       });
     }
 
-    const ticket = await googleClient.verifyIdToken({
-      idToken: credential,
-      audience: process.env.GOOGLE_CLIENT_ID,
-    });
+    let ticket;
+
+    try {
+      ticket = await googleClient.verifyIdToken({
+        idToken: credential,
+        audience: process.env.GOOGLE_CLIENT_ID,
+      });
+    } catch (verifyError) {
+      // Wrong audience (client id mismatch), expired token, bad signature or
+      // clock skew all land here. Without this they became a generic 500.
+      // The reason is logged server-side only; it contains no secrets.
+      console.error(
+        `Google ID token rejected: ${verifyError.message} ` +
+          "(check GOOGLE_CLIENT_ID matches NEXT_PUBLIC_GOOGLE_CLIENT_ID and the server clock)"
+      );
+
+      return res.status(401).json({
+        message: "Google sign-in could not be verified. Please try again.",
+      });
+    }
 
     const payload = ticket.getPayload();
 

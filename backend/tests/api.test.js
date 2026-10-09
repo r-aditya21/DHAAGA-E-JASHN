@@ -250,6 +250,107 @@ describe("auth", () => {
   });
 });
 
+describe("google login (token verification mocked)", () => {
+  const { OAuth2Client } = require("google-auth-library");
+  const realVerify = OAuth2Client.prototype.verifyIdToken;
+  const previousClientId = process.env.GOOGLE_CLIENT_ID;
+  let payload;
+  let verifyError;
+  let seenAudience;
+
+  before(() => {
+    process.env.GOOGLE_CLIENT_ID = "test-client-id.apps.googleusercontent.com";
+    OAuth2Client.prototype.verifyIdToken = async function (options) {
+      seenAudience = options.audience;
+      if (verifyError) throw verifyError;
+      return { getPayload: () => payload };
+    };
+  });
+
+  after(() => {
+    OAuth2Client.prototype.verifyIdToken = realVerify;
+    if (previousClientId === undefined) delete process.env.GOOGLE_CLIENT_ID;
+    else process.env.GOOGLE_CLIENT_ID = previousClientId;
+  });
+
+  const login = (credential = "fake-id-token") =>
+    call("POST", "/api/auth/google", { body: { credential } });
+
+  it("requires a credential", async () => {
+    assert.equal((await call("POST", "/api/auth/google", { body: {} })).status, 400);
+    assert.equal((await login(123)).status, 400);
+  });
+
+  it("creates a user, sets the session cookie, and verifies against GOOGLE_CLIENT_ID", async () => {
+    verifyError = null;
+    payload = {
+      sub: "google-sub-1",
+      email: "Gita.Google@Example.com",
+      email_verified: true,
+      name: "Gita",
+    };
+
+    const res = await login();
+    assert.equal(res.status, 200);
+    assert.equal(seenAudience, process.env.GOOGLE_CLIENT_ID);
+    assert.equal(res.data.user.email, "gita.google@example.com");
+    assert.match(res.rawCookie, /HttpOnly/i);
+
+    const me = await call("GET", "/api/auth/me", { cookie: res.cookie });
+    assert.equal(me.status, 200);
+    assert.equal(me.data.user.email, "gita.google@example.com");
+  });
+
+  it("logs in the same account again without duplicating it", async () => {
+    const before = await User.countDocuments({ googleId: "google-sub-1" });
+    assert.equal((await login()).status, 200);
+    assert.equal(await User.countDocuments({ googleId: "google-sub-1" }), before);
+  });
+
+  it("links Google to an existing password account with the same email", async () => {
+    const email = `linked_${Date.now()}@example.com`;
+    await User.create({ name: "Linked", email, password: await bcrypt.hash(PASSWORD, 4) });
+    payload = { sub: "google-sub-2", email, email_verified: true, name: "Linked" };
+
+    assert.equal((await login()).status, 200);
+    assert.equal((await User.findOne({ email })).googleId, "google-sub-2");
+  });
+
+  it("refuses an email already linked to a different Google account", async () => {
+    payload = {
+      sub: "google-sub-other",
+      email: "gita.google@example.com",
+      email_verified: true,
+      name: "Impostor",
+    };
+    // sub differs, so lookup falls back to the email, which has another googleId
+    assert.equal((await login()).status, 409);
+  });
+
+  it("rejects unverified Google emails", async () => {
+    payload = { sub: "google-sub-3", email: "x@example.com", email_verified: false };
+    assert.equal((await login()).status, 401);
+  });
+
+  it("returns 401 (not 500) when the token fails verification", async () => {
+    verifyError = new Error("Wrong recipient, payload audience != requiredAudience");
+    const res = await login();
+    assert.equal(res.status, 401);
+    assert.match(res.data.message, /could not be verified/i);
+    verifyError = null;
+  });
+
+  it("returns 500 when GOOGLE_CLIENT_ID is not configured on the server", async () => {
+    const id = process.env.GOOGLE_CLIENT_ID;
+    delete process.env.GOOGLE_CLIENT_ID;
+    try {
+      assert.equal((await login()).status, 500);
+    } finally {
+      process.env.GOOGLE_CLIENT_ID = id;
+    }
+  });
+});
+
 describe("authorization", () => {
   it("blocks anonymous and customer access to every admin surface", async () => {
     const adminRoutes = [

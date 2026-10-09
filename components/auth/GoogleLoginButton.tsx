@@ -19,7 +19,14 @@ export default function GoogleLoginButton({
   const { googleLogin } = useAuth();
 
   // The Google button cannot render without a client id.
-  if (!process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID) return null;
+  if (!process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID) {
+    // NEXT_PUBLIC_ variables are inlined at build time: set it before
+    // `next build`/`next dev`, not just at runtime.
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("NEXT_PUBLIC_GOOGLE_CLIENT_ID is not set; the Google button is hidden.");
+    }
+    return null;
+  }
 
   return (
     <GoogleLogin
