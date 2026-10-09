@@ -1,6 +1,10 @@
 const Cart = require("../models/Cart");
 const Product = require("../models/Product");
-const { MAX_CART_ITEM_QUANTITY } = require("../config/constants");
+const {
+  MAX_CART_ITEM_QUANTITY,
+  FREE_SHIPPING_THRESHOLD,
+  calculateShipping,
+} = require("../config/constants");
 const { isValidObjectId } = require("../utils/helpers");
 
 const isValidQuantity = (value) =>
@@ -54,7 +58,16 @@ const buildSummary = (cart) => {
     itemCount += item.quantity;
   }
 
-  return { subtotal, itemCount, hasUnavailableItems };
+  const shippingFee = calculateShipping(subtotal);
+
+  return {
+    subtotal,
+    itemCount,
+    hasUnavailableItems,
+    shippingFee,
+    total: subtotal + shippingFee,
+    freeShippingThreshold: FREE_SHIPPING_THRESHOLD,
+  };
 };
 
 const getCart = async (req, res, next) => {
@@ -304,7 +317,14 @@ const clearCart = async (req, res, next) => {
     res.status(200).json({
       message: "Cart cleared successfully",
       cart,
-      summary: { subtotal: 0, itemCount: 0, hasUnavailableItems: false },
+      summary: {
+        subtotal: 0,
+        itemCount: 0,
+        hasUnavailableItems: false,
+        shippingFee: 0,
+        total: 0,
+        freeShippingThreshold: FREE_SHIPPING_THRESHOLD,
+      },
     });
   } catch (error) {
     next(error);

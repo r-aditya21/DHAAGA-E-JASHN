@@ -16,10 +16,6 @@ import { ApiError } from '@/lib/api/client'
 import { useAuth } from '@/context/AuthContext'
 import { formatPrice } from '@/lib/format'
 
-// Keep in sync with backend/config/constants.js (the server is the source of truth).
-const FREE_SHIPPING_THRESHOLD = 1999
-const SHIPPING_FEE = 99
-
 type RazorpaySuccess = {
   razorpay_order_id: string
   razorpay_payment_id: string
@@ -76,6 +72,8 @@ export default function CheckoutPage() {
 
   const [cartItems, setCartItems] = useState<CartItem[]>([])
   const [subtotal, setSubtotal] = useState(0)
+  const [shipping, setShipping] = useState(0)
+  const [totalAmount, setTotalAmount] = useState(0)
   const [addresses, setAddresses] = useState<Address[]>([])
   const [selectedAddressId, setSelectedAddressId] = useState<string>('')
 
@@ -109,7 +107,10 @@ export default function CheckoutPage() {
         .then(([cartRes, addrRes]) => {
           const items = cartRes.cart?.items || []
           setCartItems(items)
+          // Totals come from the server; never recompute shipping here.
           setSubtotal(cartRes.summary?.subtotal || 0)
+          setShipping(cartRes.summary?.shippingFee || 0)
+          setTotalAmount(cartRes.summary?.total || 0)
 
           const addrs = addrRes.addresses || []
           setAddresses(addrs)
@@ -257,8 +258,6 @@ export default function CheckoutPage() {
     }
   }
 
-  const shipping = subtotal >= FREE_SHIPPING_THRESHOLD || subtotal === 0 ? 0 : SHIPPING_FEE
-  const totalAmount = subtotal + shipping
 
   return (
     <>

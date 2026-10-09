@@ -69,6 +69,15 @@ app.use(cookieParser());
 
 app.use("/api", apiLimiter);
 
+// Public storefront config, so the frontend never hard-codes shipping rules.
+app.get("/api/config", (req, res) => {
+  const { FREE_SHIPPING_THRESHOLD, SHIPPING_FEE } = require("./config/constants");
+  res.json({
+    freeShippingThreshold: FREE_SHIPPING_THRESHOLD,
+    shippingFee: SHIPPING_FEE,
+  });
+});
+
 app.use("/api/auth", authRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/categories", categoryRoutes);

@@ -13,6 +13,10 @@ export type CartSummary = {
   subtotal: number;
   itemCount: number;
   hasUnavailableItems: boolean;
+  // Computed by the server; the frontend must not recompute shipping.
+  shippingFee: number;
+  total: number;
+  freeShippingThreshold: number;
 };
 
 export type Cart = {

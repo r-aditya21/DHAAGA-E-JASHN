@@ -9,13 +9,10 @@ import Footer from '@/components/layout/Footer'
 import Toast from '@/components/ui/Toast'
 import BagCountManager from '@/components/ui/BagCountManager'
 import { KurtaSilhouette } from '@/components/shop/ProductCard'
-import { getCart, updateCartItem, removeCartItem, clearCart, CartItem } from '@/lib/api/cart'
+import { getCart, updateCartItem, removeCartItem, clearCart, CartItem, CartSummary } from '@/lib/api/cart'
 import { useAuth } from '@/context/AuthContext'
 import { useAuthModal } from '@/context/AuthModalContext'
 import { formatPrice } from '@/lib/format'
-
-const FREE_SHIPPING_THRESHOLD = 1499
-const SHIPPING_FEE = 150
 
 export default function CartPage() {
   const router = useRouter()
@@ -24,6 +21,17 @@ export default function CartPage() {
 
   const [items, setItems] = useState<CartItem[]>([])
   const [subtotal, setSubtotal] = useState(0)
+  const [shipping, setShipping] = useState(0)
+  const [total, setTotal] = useState(0)
+  const [freeShippingThreshold, setFreeShippingThreshold] = useState(0)
+
+  // Totals come from the server; never recompute shipping here.
+  const applySummary = (summary?: CartSummary) => {
+    setSubtotal(summary?.subtotal || 0)
+    setShipping(summary?.shippingFee || 0)
+    setTotal(summary?.total || 0)
+    setFreeShippingThreshold(summary?.freeShippingThreshold || 0)
+  }
   const [loading, setLoading] = useState(true)
   const [updatingId, setUpdatingId] = useState<string | null>(null)
   const [error, setError] = useState('')
@@ -34,7 +42,7 @@ export default function CartPage() {
       setError('')
       const res = await getCart()
       setItems(res.cart?.items || [])
-      setSubtotal(res.summary?.subtotal || 0)
+      applySummary(res.summary)
     } catch (err: any) {
       setError(err?.message || 'Could not load your shopping bag')
       setItems([])
@@ -59,7 +67,7 @@ export default function CartPage() {
       setUpdatingId(itemId)
       const res = await updateCartItem(itemId, newQty)
       setItems(res.cart?.items || [])
-      setSubtotal(res.summary?.subtotal || 0)
+      applySummary(res.summary)
       await refreshCart()
     } catch (err: any) {
       window.dispatchEvent(
@@ -75,7 +83,7 @@ export default function CartPage() {
       setUpdatingId(itemId)
       const res = await removeCartItem(itemId)
       setItems(res.cart?.items || [])
-      setSubtotal(res.summary?.subtotal || 0)
+      applySummary(res.summary)
       await refreshCart()
       window.dispatchEvent(
         new CustomEvent('dhaaga:toast', { detail: 'Item removed from bag' })
@@ -96,6 +104,8 @@ export default function CartPage() {
       await clearCart()
       setItems([])
       setSubtotal(0)
+      setShipping(0)
+      setTotal(0)
       await refreshCart()
       window.dispatchEvent(
         new CustomEvent('dhaaga:toast', { detail: 'Shopping bag cleared' })
@@ -109,9 +119,7 @@ export default function CartPage() {
     }
   }
 
-  const shipping = subtotal >= FREE_SHIPPING_THRESHOLD || subtotal === 0 ? 0 : SHIPPING_FEE
-  const total = subtotal + shipping
-  const awayFromFreeShipping = Math.max(0, FREE_SHIPPING_THRESHOLD - subtotal)
+  const awayFromFreeShipping = Math.max(0, freeShippingThreshold - subtotal)
 
   return (
     <>
@@ -229,13 +237,13 @@ export default function CartPage() {
                   ) : (
                     <span style={{ color: '#2E7D32', fontWeight: 600 }}>🎉 You have qualified for <strong>FREE SHIPPING</strong>!</span>
                   )}
-                  <span>Threshold: {formatPrice(FREE_SHIPPING_THRESHOLD)}</span>
+                  <span>Threshold: {formatPrice(freeShippingThreshold)}</span>
                 </div>
                 <div style={{ height: 6, background: '#E8DFD1', borderRadius: 3, overflow: 'hidden' }}>
                   <div
                     style={{
                       height: '100%',
-                      width: `${Math.min(100, (subtotal / FREE_SHIPPING_THRESHOLD) * 100)}%`,
+                      width: `${Math.min(100, freeShippingThreshold > 0 ? (subtotal / freeShippingThreshold) * 100 : 0)}%`,
                       background: '#C99A3D',
                       transition: 'width 0.4s ease',
                     }}

@@ -17,6 +17,7 @@ import QuickViewModal from '@/components/shop/QuickViewModal'
 import { gsap } from '@/lib/gsapUtils'
 import { getProducts, Product as APIProduct } from '@/lib/api/products'
 import { getCategories, Category } from '@/lib/api/categories'
+import { useFreeShippingThreshold } from '@/lib/useFreeShippingThreshold'
 import { formatPrice } from '@/lib/format'
 
 type SortOption = 'newest' | 'price_asc' | 'price_desc' | 'name'
@@ -51,6 +52,7 @@ function ShopContent() {
   const initialSearch = searchParams.get('q') || searchParams.get('search') || ''
 
   const [categories, setCategories] = useState<Category[]>([])
+  const freeShippingThreshold = useFreeShippingThreshold()
   const [selectedCategory, setSelectedCategory] = useState<string>(initialCategory)
   const [sort, setSort] = useState<SortOption>('newest')
   const [query, setQuery] = useState(initialSearch)
@@ -325,7 +327,9 @@ function ShopContent() {
         {/* Bottom note */}
         <div className="shop-note">
           <span>CRAFTED FOR EVERYDAY JASHN</span>
-          <span>FREE SHIPPING ON ORDERS ABOVE {formatPrice(1499)}</span>
+          {freeShippingThreshold !== null && (
+            <span>FREE SHIPPING ON ORDERS ABOVE {formatPrice(freeShippingThreshold)}</span>
+          )}
         </div>
       </section>
 

@@ -161,6 +161,13 @@ describe("platform", () => {
     assert.equal(res.headers.get("x-content-type-options"), "nosniff");
   });
 
+  it("serves public shipping config from the same constants as pricing", async () => {
+    const res = await call("GET", "/api/config");
+    assert.equal(res.status, 200);
+    assert.equal(res.data.freeShippingThreshold, 1999);
+    assert.equal(res.data.shippingFee, 99);
+  });
+
   it("rejects malformed JSON with 400", async () => {
     const res = await fetch(`${baseUrl}/api/auth/login`, {
       method: "POST",
@@ -800,13 +807,22 @@ describe("orders and inventory", () => {
       body: { productId: ctx.product2._id, size: "M", color: "Sand", quantity: 1 },
     });
 
+    // The cart summary must quote exactly what the order will charge, so the
+    // frontend never needs its own shipping constants.
+    const cart = await call("GET", "/api/cart", { cookie: ctx.customer });
+    assert.equal(cart.data.summary.subtotal, 999);
+    assert.equal(cart.data.summary.shippingFee, 99);
+    assert.equal(cart.data.summary.total, 999 + 99);
+    assert.equal(cart.data.summary.freeShippingThreshold, 1999);
+
     const res = await call("POST", "/api/orders", {
       cookie: ctx.customer,
       body: { addressId: ctx.addressId, paymentMethod: "cod" },
     });
     assert.equal(res.status, 201);
+    assert.equal(res.data.order.shippingFee, cart.data.summary.shippingFee);
     assert.equal(res.data.order.shippingFee, 99);
-    assert.equal(res.data.order.totalAmount, 999 + 99);
+    assert.equal(res.data.order.totalAmount, cart.data.summary.total);
     ctx.order2 = res.data.order;
   });
 

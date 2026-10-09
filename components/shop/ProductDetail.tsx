@@ -16,6 +16,7 @@ import { addToWishlist, removeFromWishlist } from '@/lib/api/wishlist'
 import { useAuth } from '@/context/AuthContext'
 import { useAuthModal } from '@/context/AuthModalContext'
 import { formatPrice } from '@/lib/format'
+import { useFreeShippingThreshold } from '@/lib/useFreeShippingThreshold'
 
 const COLOR_HEX_MAP: Record<string, string> = {
   ivory: '#EFE8DA',
@@ -41,6 +42,7 @@ export default function ProductDetail({
   initialProduct?: APIProduct | null
 }) {
   const { user, wishlistIds, refreshWishlist, refreshCart } = useAuth()
+  const freeShippingThreshold = useFreeShippingThreshold()
   const { openAuth } = useAuthModal()
 
   const [product, setProduct] = useState<APIProduct | null>(initialProduct)
@@ -419,7 +421,7 @@ export default function ProductDetail({
                   <p style={{ fontSize: '1.5rem', fontWeight: 600, color: '#06223C' }}>
                     {formatPrice(product.price)}
                   </p>
-                  <span style={{ fontSize: 12, color: '#496174' }}>Inclusive of all taxes · Free shipping &gt; ₹1499</span>
+                  <span style={{ fontSize: 12, color: '#496174' }}>Inclusive of all taxes{freeShippingThreshold !== null && <> · Free shipping above {formatPrice(freeShippingThreshold)}</>}</span>
                 </div>
 
                 {/* Star rating summary */}

@@ -4,8 +4,7 @@ const Order = require("../models/Order");
 const Cart = require("../models/Cart");
 const Address = require("../models/Address");
 const {
-  FREE_SHIPPING_THRESHOLD,
-  SHIPPING_FEE,
+  calculateShipping,
   ORDER_STATUSES,
   canTransitionOrder,
 } = require("../config/constants");
@@ -120,7 +119,7 @@ const createOrder = async (req, res, next) => {
       });
     }
 
-    const shippingFee = subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_FEE;
+    const shippingFee = calculateShipping(subtotal);
     const totalAmount = subtotal + shippingFee;
 
     // Atomically deduct stock. Prevents two buyers taking the last item.

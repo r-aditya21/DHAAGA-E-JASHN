@@ -20,9 +20,18 @@ const canTransitionOrder = (from, to) => {
   return ORDER_FLOW.indexOf(to) > ORDER_FLOW.indexOf(from);
 };
 
+const FREE_SHIPPING_THRESHOLD = num(process.env.FREE_SHIPPING_THRESHOLD, 1999);
+const SHIPPING_FEE = num(process.env.SHIPPING_FEE, 99);
+
+// The ONE place shipping is decided. Cart summary, order creation and the
+// public config endpoint all use it; the frontend must never recompute it.
+const calculateShipping = (subtotal) =>
+  subtotal <= 0 || subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_FEE;
+
 module.exports = {
-  FREE_SHIPPING_THRESHOLD: num(process.env.FREE_SHIPPING_THRESHOLD, 1999),
-  SHIPPING_FEE: num(process.env.SHIPPING_FEE, 99),
+  FREE_SHIPPING_THRESHOLD,
+  SHIPPING_FEE,
+  calculateShipping,
   MAX_CART_ITEM_QUANTITY: 10,
   ORDER_FLOW,
   ORDER_STATUSES,
